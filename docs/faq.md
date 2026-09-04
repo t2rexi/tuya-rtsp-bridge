@@ -21,7 +21,7 @@ The desktop UI now starts the local API (`:8787`) automatically if it was down. 
 
 ### VLC is black / the preview is a slit
 
-VLC 3 often fails on HEVC over RTSP. That does **not** mean the stream is dead. Use Agent DVR, Frigate, or ffplay. The desktop preview needs a current VLC install (Windows Setup already bundles it). On Linux the GUI uses an ffmpeg MJPEG pipe instead of embedded VLC.
+VLC 3 often fails on HEVC over RTSP. That does **not** mean the stream is dead. Use Agent DVR, Frigate, or ffplay on `rtsp://127.0.0.1:8554/<Name>/hd`. The desktop preview uses **SD**. On Linux the GUI uses an ffmpeg MJPEG pipe instead of embedded VLC.
 
 ### I expected 60 fps
 

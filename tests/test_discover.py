@@ -6,7 +6,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tuya_client import as_dict_list, home_gid, looks_like_camera, room_devices  # noqa: E402
+from tuya_client import (  # noqa: E402
+    as_dict_list,
+    extra_homes,
+    home_gid,
+    looks_like_camera,
+    room_devices,
+    safe_poll_text,
+)
 
 
 def test_looks_like_camera() -> None:
@@ -41,9 +48,23 @@ def test_room_devices() -> None:
     assert room_devices({}) == []
 
 
+def test_extra_homes() -> None:
+    assert extra_homes(None) == []
+    assert extra_homes({"extras": {"homeId": "202072031"}}) == [
+        {"gid": "202072031", "homeId": "202072031", "name": "extras"}
+    ]
+
+
+def test_safe_poll_text() -> None:
+    assert "hidden" in safe_poll_text('{"sid":"eu-secret","email":"x@y.z"}')
+    assert safe_poll_text("QR erzeugt, warte auf Scan …") == "QR erzeugt, warte auf Scan …"
+
+
 if __name__ == "__main__":
     test_looks_like_camera()
     test_as_dict_list_wrap()
     test_home_gid()
     test_room_devices()
+    test_extra_homes()
+    test_safe_poll_text()
     print("discover helpers ok")

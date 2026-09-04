@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.6
+
+- HA add-on: bust Docker git-clone cache (stale 1.2.4 image after “update”)
+- Discover cameras via login `extras.homeId` when homeList is empty
+- Do not print session JSON (`sid`) in the web log
+- Windows preview still uses SD; a black tile with VLC 3 + HEVC is not a dead RTSP stream
+
 ## 1.2.5
 
 - Fix empty camera list after login (#1): more Tuya categories (doorbells, `sp_*`, p2p), keep devices if jarvis/config fails, show `homes=`/`skipped=` in the UI

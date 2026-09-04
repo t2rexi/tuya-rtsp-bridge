@@ -127,6 +127,31 @@ def looks_like_camera(device: dict) -> bool:
     return False
 
 
+def extra_homes(login: Any) -> list[dict]:
+    """Some accounts only put the home id on login extras, not in homeList."""
+    if not isinstance(login, dict):
+        return []
+    extras = login.get("extras") if isinstance(login.get("extras"), dict) else {}
+    out: list[dict] = []
+    for key in ("homeId", "gid", "groupId"):
+        val = extras.get(key)
+        if val not in (None, ""):
+            out.append({"gid": val, "homeId": val, "name": "extras"})
+            break
+    return out
+
+
+def safe_poll_text(raw: Any) -> str:
+    """Never put session cookies / sid into the UI log."""
+    text = "" if raw is None else str(raw)
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(k in lowered for k in ('"sid"', "fast-sid", "s-sid", "ecode", "localkey")):
+        return "Login ok (session details hidden)."
+    return text[:400]
+
+
 class TuyaClient:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
@@ -373,7 +398,7 @@ class TuyaClient:
         )
         raw = resp.text
         self.poll_count += 1
-        self.last_poll = raw[:8000]
+        self.last_poll = safe_poll_text(raw)
         resp.raise_for_status()
         body = resp.json()
         login = self._as_login(body.get("result"))
@@ -504,6 +529,12 @@ class TuyaClient:
             errors.append(f"homeList: {exc}")
 
         homes = as_dict_list(homes_body.get("result"))
+        seen_gids = {str(home_gid(h)) for h in homes if home_gid(h) is not None}
+        for extra in extra_homes(self.login):
+            gid = home_gid(extra)
+            if gid is not None and str(gid) not in seen_gids:
+                homes.append(extra)
+                seen_gids.add(str(gid))
         homes_n = len(homes)
         for home in homes:
             gid = home_gid(home)

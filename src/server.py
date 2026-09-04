@@ -19,7 +19,7 @@ from PIL import Image
 
 from rtsp_manager import RtspManager
 from hd_proxy import MultiHdProxy
-from tuya_client import REGIONS, TuyaClient, slug
+from tuya_client import REGIONS, TuyaClient, safe_poll_text, slug
 from local_ptz import LocalPtz
 import services
 
@@ -99,7 +99,7 @@ def public_state() -> dict:
         "hasQr": bool(client.token) and phase == "waiting",
         "qrId": (client.token or "")[-12:],
         "pollCount": client.poll_count,
-        "lastPoll": client.last_poll,
+        "lastPoll": safe_poll_text(client.last_poll),
         "cameras": cameras,
         "discovery": getattr(client, "discovery", None) or {},
         "rtsp": rtsp.status(),

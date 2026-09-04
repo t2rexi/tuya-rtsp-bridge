@@ -49,5 +49,5 @@ The Web UI can show **Session active** and still **0 cameras**. That is a discov
 
 1. Click **Refresh cameras** (or Create QR again).
 2. Stay on **Western Europe (EU)** if playback works on `protect-eu.ismartlife.me`. The other “Western Europe (WE)” host is a different cluster.
-3. Rebuild/update the add-on after **1.2.5** — older builds only listed Tuya categories `sp` and `dghsxj`, so doorbells and some battery cams were dropped.
-4. The empty-state text now includes `homes=` / `skipped=` counts. Paste that into a GitHub issue (no cookies, no live video).
+3. Rebuild/update the add-on after **1.2.6** (not just Restart). Older Docker layers cached an old `git clone` of the app, so “update” could still run 1.2.4 code.
+4. The empty-state text now includes `homes=` / `skipped=` counts. Paste that into a GitHub issue (no cookies, no live video, no login JSON).

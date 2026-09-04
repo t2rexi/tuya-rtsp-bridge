@@ -5,20 +5,25 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm
 ARG REPO_URL=https://github.com/DanEng1982/tuya-rtsp-bridge.git
 ARG REPO_REF=main
+# Bump APP_VERSION on every release so Docker does not reuse a stale git clone.
+ARG APP_VERSION=1.2.6
 
 FROM golang:1.23-bookworm AS engine
 ARG REPO_URL
 ARG REPO_REF
+ARG APP_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" repo \
+RUN echo "engine ${APP_VERSION} ${REPO_REF}" \
+    && git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" repo \
     && cd repo/vendor/tuya-ipc-terminal \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tuya-ipc-terminal .
 
 FROM ${BUILD_FROM}
 ARG REPO_URL
 ARG REPO_REF
+ARG APP_VERSION
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -26,7 +31,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" /tmp/repo \
+RUN echo "app ${APP_VERSION} ${REPO_REF}" \
+    && git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" /tmp/repo \
     && cp /tmp/repo/requirements-docker.txt /app/requirements-docker.txt \
     && cp -a /tmp/repo/src /app/src \
     && cp -a /tmp/repo/web /app/web \
