@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.5
+
+- Fix empty camera list after login (#1): more Tuya categories (doorbells, `sp_*`, p2p), keep devices if jarvis/config fails, show `homes=`/`skipped=` in the UI
+- HA add-on README: troubleshooting for Session-active / 0 cameras
+
 ## 1.2.4
 
 - Fix Windows QR display: Canvas + fixed 320×320 NEAREST (no Tk Label slit) — #2

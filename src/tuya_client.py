@@ -44,7 +44,19 @@ REGIONS = {
     },
 }
 
-CAMERA_CATEGORIES = {"sp", "dghsxj"}
+CAMERA_CATEGORIES = {
+    "sp",
+    "dghsxj",
+    "videolock",
+    "wfcon",
+    "sp_wnq",
+    "sp_dpc",
+    "hpsj",
+    "sj",
+    "cat1",
+    "ipc",
+    "camera",
+}
 QR_PAYLOAD_PREFIX = "tuyaSmart--qrLogin?token="
 
 
@@ -73,6 +85,48 @@ def _clean_name(name: str, device_id: str) -> str:
     return s or device_id or "camera"
 
 
+def as_dict_list(result: Any) -> list[dict]:
+    """homeList/roomList sometimes wrap the array in an object."""
+    if isinstance(result, list):
+        return [x for x in result if isinstance(x, dict)]
+    if isinstance(result, dict):
+        for key in ("homeList", "homes", "roomList", "rooms", "list", "result"):
+            inner = result.get(key)
+            if isinstance(inner, list):
+                return [x for x in inner if isinstance(x, dict)]
+    return []
+
+
+def home_gid(home: dict) -> Any:
+    for key in ("gid", "groupId", "id", "homeId"):
+        val = home.get(key)
+        if val is not None and val != "":
+            return val
+    return None
+
+
+def room_devices(room: dict) -> list[dict]:
+    if not isinstance(room, dict):
+        return []
+    for key in ("deviceList", "devices", "deviceInfoList"):
+        inner = room.get(key)
+        if isinstance(inner, list):
+            return [x for x in inner if isinstance(x, dict)]
+    return []
+
+
+def looks_like_camera(device: dict) -> bool:
+    """sp/dghsxj are the common IPC codes; doorbells and p2p devices too."""
+    if not isinstance(device, dict):
+        return False
+    cat = str(device.get("category") or "")
+    if cat in CAMERA_CATEGORIES or cat.startswith("sp") or "video" in cat.lower():
+        return True
+    if device.get("p2pType") or device.get("supportCloudStorage"):
+        return True
+    return False
+
+
 class TuyaClient:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
@@ -84,6 +138,7 @@ class TuyaClient:
         self.token: Optional[str] = None
         self.login: Optional[dict] = None
         self.cameras: list[dict] = []
+        self.discovery: dict[str, Any] = {}
         self.last_error: Optional[str] = None
         self.last_poll: Optional[str] = None
         self.poll_count = 0
@@ -438,41 +493,67 @@ class TuyaClient:
         self._post("/api/customized/web/app/info", payload=None, referer="/playback")
         devices: list[dict] = []
         seen: set[str] = set()
+        skipped: dict[str, int] = {}
+        errors: list[str] = []
+        homes_n = 0
 
         try:
-            homes = self._post("/api/new/common/homeList", payload=None, referer="/playback")
-        except Exception:
-            homes = {"result": []}
+            homes_body = self._post("/api/new/common/homeList", payload=None, referer="/playback")
+        except Exception as exc:
+            homes_body = {"result": []}
+            errors.append(f"homeList: {exc}")
 
-        for home in homes.get("result") or []:
-            gid = home.get("gid")
+        homes = as_dict_list(homes_body.get("result"))
+        homes_n = len(homes)
+        for home in homes:
+            gid = home_gid(home)
             if gid is None:
                 continue
             try:
-                rooms = self._post(
+                rooms_body = self._post(
                     "/api/new/common/roomList",
                     payload={"homeId": str(gid)},
                     referer="/playback",
                 )
-            except Exception:
+            except Exception as exc:
+                errors.append(f"roomList {gid}: {exc}")
                 continue
-            for room in rooms.get("result") or []:
-                for device in room.get("deviceList") or []:
+            for room in as_dict_list(rooms_body.get("result")):
+                for device in room_devices(room):
                     did = device.get("deviceId")
-                    if device.get("category") in CAMERA_CATEGORIES and did and did not in seen:
+                    if not did or did in seen:
+                        continue
+                    if looks_like_camera(device):
                         seen.add(did)
                         devices.append(device)
+                    else:
+                        cat = str(device.get("category") or "?")
+                        skipped[cat] = skipped.get(cat, 0) + 1
 
         try:
             shared = self._post("/api/new/playback/shareList", payload=None, referer="/playback")
-        except Exception:
+        except Exception as exc:
             shared = {}
-        for sh in ((shared.get("result") or {}).get("securityWebCShareInfoList") or []):
-            for device in sh.get("deviceInfoList") or []:
-                did = device.get("deviceId")
-                if device.get("category") in CAMERA_CATEGORIES and did and did not in seen:
+            errors.append(f"shareList: {exc}")
+        share_root = shared.get("result")
+        share_homes = []
+        if isinstance(share_root, dict):
+            share_homes = share_root.get("securityWebCShareInfoList") or []
+        elif isinstance(share_root, list):
+            share_homes = share_root
+        for sh in share_homes:
+            if not isinstance(sh, dict):
+                continue
+            for device in sh.get("deviceInfoList") or room_devices(sh):
+                did = device.get("deviceId") if isinstance(device, dict) else None
+                if not did or did in seen:
+                    continue
+                if looks_like_camera(device):
                     seen.add(did)
                     devices.append(device)
+                else:
+                    cat = str(device.get("category") or "?")
+                    skipped[cat] = skipped.get(cat, 0) + 1
 
         email = self.login.get("email") or self.login.get("username") or self.login.get("uid")
         user_key = _user_key(self.region_key, email)
@@ -490,8 +571,8 @@ class TuyaClient:
                     referer="/playback",
                 )
                 skill = (cfg.get("result") or {}).get("skill") or ""
-            except Exception:
-                continue
+            except Exception as exc:
+                errors.append(f"jarvis {did[-6:]}: {type(exc).__name__}")
             name = _clean_name(device.get("deviceName") or "", did)
             cameras.append(
                 {
@@ -506,7 +587,27 @@ class TuyaClient:
                 }
             )
         self.cameras = cameras
-        registry = {"cameras": cameras, "lastUpdated": _utc_iso()}
+        note = f"{len(cameras)} camera(s) from {homes_n} home(s)."
+        if not cameras:
+            bits = [f"homes={homes_n}", f"candidates={len(devices)}"]
+            if skipped:
+                bits.append("skipped=" + ",".join(f"{k}:{v}" for k, v in sorted(skipped.items())))
+            if errors:
+                bits.append("errors=" + "; ".join(errors[:4]))
+            note = (
+                "No cameras. "
+                + " ".join(bits)
+                + " Try Refresh cameras, or the other EU/WE region."
+            )
+        self.discovery = {
+            "homes": homes_n,
+            "candidates": len(devices),
+            "cameras": len(cameras),
+            "skipped": skipped,
+            "errors": errors[:8],
+            "note": note,
+        }
+        registry = {"cameras": cameras, "lastUpdated": _utc_iso(), "discovery": self.discovery}
         (self.data_dir / "cameras.json").write_text(
             json.dumps(registry, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -522,6 +623,7 @@ class TuyaClient:
         self.token = None
         self.login = None
         self.cameras = []
+        self.discovery = {}
         self.last_error = None
 
 

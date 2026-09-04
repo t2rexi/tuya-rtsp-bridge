@@ -295,7 +295,7 @@
       }
 
       if (!(s.cameras||[]).length) {
-        $("camTable").innerHTML = `<div class="empty">${s.loggedIn ? "No cameras." : "HD links appear after you scan."}</div>`;
+        $("camTable").innerHTML = `<div class="empty">${s.loggedIn ? ((s.discovery && s.discovery.note) || "No cameras.") : "HD links appear after you scan."}</div>`;
       } else {
         $("camTable").innerHTML = s.cameras.map(c => `
           <article class="card">

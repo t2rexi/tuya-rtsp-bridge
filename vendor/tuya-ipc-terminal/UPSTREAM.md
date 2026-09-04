@@ -27,6 +27,8 @@ Applied on top of `d65b3e9`. Kept small on purpose.
 3. **`pkg/storage/manager.go`** — look for `.tuya-data` in the process
    working directory, `%LOCALAPPDATA%\tuya-ipc-terminal`, and the user
    profile, not only `cwd/.tuya-data`.
+4. **`cmd/cameras/cameras.go`** — treat doorbells / `sp_*` / p2p devices as
+   cameras; do not drop a device if WebRTC config fails.
 
 Re-apply after an upstream pull:
 

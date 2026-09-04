@@ -2,7 +2,10 @@
 
 ### The camera list is empty after login
 
-Wrong region. “Western Europe” in the German app is **EU** (`protect-eu`), not WE. Try the other cluster in the same continent.
+1. Wrong region. “Western Europe” in the German app is **EU** (`protect-eu`), not WE. Try the other cluster in the same continent.
+2. Click **Refresh cameras** (or Create QR again). The UI now shows a short note (`homes=… skipped=category:n`) instead of a blank “No cameras.”
+3. Doorbells and some battery cams are not category `sp`. 1.2.5+ treats `videolock`, `sp_*`, p2p, and cloud-storage devices as cameras too.
+4. If `homes=0`, the session cookie did not reach `homeList` — Sign out, Create QR, confirm in Smart Life.
 
 ### The QR never finishes
 

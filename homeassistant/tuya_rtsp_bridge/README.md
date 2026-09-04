@@ -42,3 +42,12 @@ See [docs/docker.md](../../docs/docker.md).
 - Desktop GUI is **not** in the add-on (headless API only)
 - Session files live under the add-on data volume — survive restarts
 - No Tuya IoT Platform developer keys required for the QR flow
+
+## Empty camera list after sign-in
+
+The Web UI can show **Session active** and still **0 cameras**. That is a discovery miss, not a failed login.
+
+1. Click **Refresh cameras** (or Create QR again).
+2. Stay on **Western Europe (EU)** if playback works on `protect-eu.ismartlife.me`. The other “Western Europe (WE)” host is a different cluster.
+3. Rebuild/update the add-on after **1.2.5** — older builds only listed Tuya categories `sp` and `dghsxj`, so doorbells and some battery cams were dropped.
+4. The empty-state text now includes `homes=` / `skipped=` counts. Paste that into a GitHub issue (no cookies, no live video).

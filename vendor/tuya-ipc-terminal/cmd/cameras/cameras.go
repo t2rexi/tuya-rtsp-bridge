@@ -7,6 +7,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -250,7 +251,7 @@ func discoverCamerasForUser(user *storage.UserSession) ([]storage.CameraInfo, er
 			for _, room := range roomList.Result {
 				for _, device := range room.DeviceList {
 					// Check if device is a camera (sp = smart camera, dghsxj = another camera type)
-					if (device.Category == "sp" || device.Category == "dghsxj") && !containsDevice(devices, device.DeviceId) {
+					if looksLikeCamera(device) && !containsDevice(devices, device.DeviceId) {
 						devices = append(devices, device)
 					}
 				}
@@ -266,7 +267,7 @@ func discoverCamerasForUser(user *storage.UserSession) ([]storage.CameraInfo, er
 		for _, sharedHome := range sharedHomes.Result.SecurityWebCShareInfoList {
 			for _, device := range sharedHome.DeviceInfoList {
 				// Check if device is a camera (sp = smart camera, dghsxj = another camera type)
-				if (device.Category == "sp" || device.Category == "dghsxj") && !containsDevice(devices, device.DeviceId) {
+				if looksLikeCamera(device) && !containsDevice(devices, device.DeviceId) {
 					devices = append(devices, device)
 				}
 			}
@@ -281,8 +282,9 @@ func discoverCamerasForUser(user *storage.UserSession) ([]storage.CameraInfo, er
 
 	for _, device := range devices {
 		webrtcConfig, err := tuya.GetWebRTCConfig(httpClient, user.SessionData.ServerHost, device.DeviceId)
-		if err != nil {
-			continue // Skip if we can't get WebRTC config
+		skill := ""
+		if err == nil {
+			skill = webrtcConfig.Result.Skill
 		}
 
 		rtspPath := storageManager.GenerateRTSPPath(device.DeviceName, device.DeviceId)
@@ -295,7 +297,7 @@ func discoverCamerasForUser(user *storage.UserSession) ([]storage.CameraInfo, er
 			RTSPPath:   rtspPath,
 			ProductID:  device.ProductId,
 			UUID:       device.Uuid,
-			Skill:      webrtcConfig.Result.Skill,
+			Skill:      skill,
 		}
 
 		allCameras = append(allCameras, camera)
@@ -350,6 +352,22 @@ func getUserFromKey(userKey string) (*storage.UserSession, error) {
 	}
 
 	return nil, fmt.Errorf("user not found for key: %s", userKey)
+}
+
+func looksLikeCamera(device tuya.Device) bool {
+	cat := device.Category
+	if cat == "sp" || cat == "dghsxj" || cat == "videolock" || cat == "wfcon" ||
+		cat == "sp_wnq" || cat == "sp_dpc" || cat == "hpsj" || cat == "sj" ||
+		cat == "cat1" || cat == "ipc" || cat == "camera" {
+		return true
+	}
+	if strings.HasPrefix(cat, "sp") || strings.Contains(strings.ToLower(cat), "video") {
+		return true
+	}
+	if device.P2pType != 0 || device.SupportCloudStorage {
+		return true
+	}
+	return false
 }
 
 func containsDevice(devices []tuya.Device, deviceID string) bool {

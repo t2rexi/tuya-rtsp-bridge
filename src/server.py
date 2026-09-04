@@ -101,6 +101,7 @@ def public_state() -> dict:
         "pollCount": client.poll_count,
         "lastPoll": client.last_poll,
         "cameras": cameras,
+        "discovery": getattr(client, "discovery", None) or {},
         "rtsp": rtsp.status(),
         "hdProxy": hd_proxy.status(),
         "sdProxy": sd_proxy.status(),
@@ -222,8 +223,13 @@ def _poll_worker(generation: int) -> None:
             if got:
                 client.save_session()
                 set_phase("logged_in", "Login ok. Suche Kameras …")
-                cams = client.discover_cameras()
-                set_phase("logged_in", f"{len(cams)} Kamera(s) gefunden.")
+                try:
+                    cams = client.discover_cameras()
+                except Exception as exc:
+                    cams = []
+                    client.last_error = str(exc)
+                note = (getattr(client, "discovery", None) or {}).get("note")
+                set_phase("logged_in", note or f"{len(cams)} Kamera(s) gefunden.")
                 try:
                     rtsp.start()
                     apply_service_flags(services.load_flags())
