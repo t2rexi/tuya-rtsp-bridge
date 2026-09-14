@@ -2,7 +2,7 @@ name: "Tuya RTSP Bridge"
 version: "1.2.6"
 slug: tuya_rtsp_bridge
 description: "Turn Tuya / Smart Life cameras into plain RTSP for Frigate, go2rtc, Agent DVR."
-url: "https://github.com/DanEng1982/tuya-rtsp-bridge"
+url: "https://github.com/t2rexi/tuya-rtsp-bridge"
 arch:
   - amd64
   - aarch64
