@@ -528,6 +528,17 @@ func (cs *CameraStream) IsConnecting() bool {
 	return cs.connecting
 }
 
+func (cs *CameraStream) HasRecentPackets() bool {
+	if cs.webrtcBridge == nil {
+		return false
+	}
+	last := cs.webrtcBridge.lastVideoPacket.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, last)) < 30*time.Second
+}
+
 func (cs *CameraStream) Stop() {
 	cs.mutex.RLock()
 	sessions := make([]string, 0, len(cs.clients))
