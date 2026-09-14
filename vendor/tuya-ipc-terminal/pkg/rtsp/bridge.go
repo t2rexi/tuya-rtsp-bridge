@@ -89,6 +89,13 @@ func (wb *WebRTCBridge) Start() error {
 		return errors.New("bridge already connected")
 	}
 
+	started := false
+	defer func() {
+		if !started {
+			wb.stopLocked()
+		}
+	}()
+
 	core.Logger.Info().Msgf("Starting WebRTC bridge for camera: %s", wb.camera.DeviceName)
 
 	// Create HTTP client with session
@@ -155,11 +162,21 @@ func (wb *WebRTCBridge) Start() error {
 		return fmt.Errorf("failed to create offer: %v", err)
 	}
 
-	if err = wb.waiter.Wait(); err != nil {
-		return fmt.Errorf("failed to establish connection: %v", err)
+	done := wb.waiter.WaitChan()
+	if done == nil {
+		return errors.New("failed to establish connection: waiter unavailable")
+	}
+	select {
+	case err = <-done:
+		if err != nil {
+			return fmt.Errorf("failed to establish connection: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		return errors.New("failed to establish connection: timeout after 30 seconds")
 	}
 
 	wb.connected = true
+	started = true
 	core.Logger.Info().Msgf("WebRTC bridge started successfully for camera: %s", wb.camera.DeviceName)
 
 	return nil
@@ -168,39 +185,42 @@ func (wb *WebRTCBridge) Start() error {
 func (wb *WebRTCBridge) Stop() {
 	wb.mutex.Lock()
 	defer wb.mutex.Unlock()
+	wb.stopLocked()
+}
 
-	if !wb.connected {
+func (wb *WebRTCBridge) stopLocked() {
+	if !wb.connected && wb.peerConnection == nil && wb.mqttClient == nil && wb.cameraClient == nil {
 		return
 	}
 
+	wasConnected := wb.connected
 	wb.connected = false
 
-	core.Logger.Info().Msgf("Stopping WebRTC bridge for camera: %s", wb.camera.DeviceName)
+	if wasConnected {
+		core.Logger.Info().Msgf("Stopping WebRTC bridge for camera: %s", wb.camera.DeviceName)
+	}
 
-	// Cancel context to stop all goroutines
-	wb.cancel()
-
-	// Send disconnect
+	if wb.cancel != nil {
+		wb.cancel()
+	}
 	if wb.cameraClient != nil {
 		wb.cameraClient.SendDisconnect()
 	}
-
-	// Close peer connection
 	if wb.peerConnection != nil {
-		wb.peerConnection.Close()
+		_ = wb.peerConnection.Close()
+		wb.peerConnection = nil
 	}
-
-	// Stop MQTT client
 	if wb.mqttClient != nil {
 		wb.mqttClient.Stop()
+		wb.mqttClient = nil
 	}
-
-	// Stop RTP forwarder
 	if wb.rtpForwarder != nil {
 		wb.rtpForwarder.Stop()
 	}
 
-	core.Logger.Info().Msgf("WebRTC bridge stopped for camera: %s", wb.camera.DeviceName)
+	if wasConnected {
+		core.Logger.Info().Msgf("WebRTC bridge stopped for camera: %s", wb.camera.DeviceName)
+	}
 }
 
 func (wb *WebRTCBridge) IsConnected() bool {
@@ -270,10 +290,14 @@ func (wb *WebRTCBridge) setupPeerConnection(webRTCConfig *tuya.WebRTCConfig) err
 					return
 				}
 
+				// Tuya HEVC cameras may use PT=95 inside the DataChannel while
+				// the RTSP SDP advertises H265 as PT=96.
+				packet.PayloadType = 96
+
 				switch packet.SSRC {
-				case wb.rtpForwarder.videoSSRC:
+				case wb.rtpForwarder.videoSSRC.Load():
 					wb.rtpForwarder.ForwardVideoPacket(packet)
-				case wb.rtpForwarder.audioSSRC:
+				case wb.rtpForwarder.audioSSRC.Load():
 					wb.rtpForwarder.ForwardAudioPacket(packet)
 				}
 			}
@@ -574,8 +598,8 @@ func (wb *WebRTCBridge) probe(msg pion.DataChannelMessage) (bool, error) {
 			return false, err
 		}
 
-		wb.rtpForwarder.videoSSRC = recvMessage.Video.SSRC
-		wb.rtpForwarder.audioSSRC = recvMessage.Audio.SSRC
+		wb.rtpForwarder.videoSSRC.Store(recvMessage.Video.SSRC)
+		wb.rtpForwarder.audioSSRC.Store(recvMessage.Audio.SSRC)
 
 		completeMsg, _ := json.Marshal(tuya.DataChannelMessage{
 			Type: "complete",
