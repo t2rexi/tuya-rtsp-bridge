@@ -486,9 +486,15 @@ func (s *RTSPServer) handlePlay(client *RTSPClient, request *RTSPRequest) {
 		return
 	}
 
-	deadline := time.Now().Add(20 * time.Second)
-	for !client.stream.IsActive() {
-		if !client.stream.IsConnecting() {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		// Only accept PLAY if the stream is active AND we have fresh
+		// video packets. Otherwise Frigate will connect to a zombie
+		// stream that hasn't received anything from Tuya in minutes.
+		if client.stream.IsActive() && client.stream.HasRecentPackets() {
+			break
+		}
+		if !client.stream.IsConnecting() && !client.stream.IsActive() {
 			sendRTSPResponse(client.conn, 503, "Service Unavailable", map[string]string{
 				"CSeq": strconv.Itoa(request.CSeq), "Session": client.session,
 			}, "WebRTC stream failed to start")
