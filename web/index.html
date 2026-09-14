@@ -353,7 +353,10 @@
       }
       yamlText = y;
       $("yamlBox").textContent = y;
-      $("logBox").textContent = [s.lastPoll, ...((s.rtsp && s.rtsp.log) || [])].filter(Boolean).join("\n");
+      let rawLogText = [s.lastPoll, ...((s.rtsp && s.rtsp.log) || [])].filter(Boolean).join("\n");
+      let formattedLogText = rawLogText.replace(/\s*(\d{2}:\d{2}:\d{2}(\.\d{3})?)/g, '\n$1');
+      formattedLogText = formattedLogText.replace(/\s+(Server:|CSeq:|Date:|Range:|Session:|RTP-Info:|a=|m=)/g, '\n   $1');
+      $("logBox").textContent = formattedLogText.trimStart();
       $("btnRefresh").disabled = !s.loggedIn;
     }
 
