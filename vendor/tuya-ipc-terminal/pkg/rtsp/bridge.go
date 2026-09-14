@@ -186,7 +186,26 @@ func (wb *WebRTCBridge) Start() error {
 	// reconnect if no video packet arrives for 30 seconds.
 	go wb.videoWatchdog()
 
+	// Proactive session lifetime: Tuya WebRTC sessions reliably die
+	// after ~8-9 minutes and start sending corrupted HEVC fragments
+	// before going silent. We restart preemptively to avoid the
+	// "garbage packets" phase that the watchdog can't detect.
+	go wb.sessionLifetime()
+
 	return nil
+}
+
+func (wb *WebRTCBridge) sessionLifetime() {
+	timer := time.NewTimer(8 * time.Minute)
+	defer timer.Stop()
+
+	select {
+	case <-wb.ctx.Done():
+		return
+	case <-timer.C:
+		core.Logger.Info().Msg("Tuya session lifetime reached (8 min), forcing reconnect")
+		wb.handleError(errors.New("session lifetime expired"))
+	}
 }
 
 func (wb *WebRTCBridge) videoWatchdog() {
