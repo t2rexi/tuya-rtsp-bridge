@@ -68,7 +68,7 @@ type CameraStream struct {
 	// reconnect at 8 min to avoid the corrupted-fragments phase.
 	lifetimeTimer *time.Timer
 	lifetimeDelay time.Duration
-	
+
 	// Reference to server for cleanup
 	server   *RTSPServer
 	streamId string
@@ -131,30 +131,48 @@ func (s *RTSPServer) Start() error {
 
 func (s *RTSPServer) Stop() error {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	if !s.running {
+		s.mutex.Unlock()
 		return errors.New("server is not running")
 	}
 
 	core.Logger.Info().Msg("Stopping RTSP server...")
 
-	// Cancel context to stop all goroutines
+	// Detach shared state while holding the server mutex, then perform all
+	// potentially blocking connection/stream teardown after releasing it.
+	// In particular, stream.Stop() may call server.removeStream(), so calling
+	// it while s.mutex is held would deadlock.
 	s.running = false
 	s.cancel()
 
-	// Close listener
-	if s.listener != nil {
-		s.listener.Close()
-	}
+	listener := s.listener
+	s.listener = nil
 
-	// Close all client connections
+	clients := make([]*RTSPClient, 0, len(s.clients))
 	for _, client := range s.clients {
-		client.conn.Close()
+		clients = append(clients, client)
 	}
 
-	// Stop all streams
+	streams := make([]*CameraStream, 0, len(s.streams))
 	for _, stream := range s.streams {
+		streams = append(streams, stream)
+	}
+
+	s.clients = make(map[string]*RTSPClient)
+	s.streams = make(map[string]*CameraStream)
+	s.mutex.Unlock()
+
+	if listener != nil {
+		_ = listener.Close()
+	}
+
+	for _, client := range clients {
+		if client != nil && client.conn != nil {
+			_ = client.conn.Close()
+		}
+	}
+
+	for _, stream := range streams {
 		stream.Stop()
 	}
 
@@ -347,7 +365,7 @@ func (s *RTSPServer) getOrCreateStream(camera *storage.CameraInfo, streamResolut
 		}
 
 		core.Logger.Error().Err(err).Msgf("WebRTC error for camera %s", camera.DeviceName)
-		stream.stopStream()
+		stream.forceRTSPReconnect("WebRTC error")
 	}
 
 	s.streams[streamId] = stream
@@ -574,8 +592,11 @@ func (cs *CameraStream) startStream() {
 	cs.active = true
 	cs.mutex.Unlock()
 
-	// Proactive reconnect: Tuya HEVC sessions reliably die after ~9 min.
-	cs.scheduleLifetime()
+	// Proactive reconnect is only needed for Tuya HEVC sessions, which are
+	// known to expire after roughly nine minutes on affected cameras.
+	if bridge.IsHEVC() {
+		cs.scheduleLifetime()
+	}
 }
 
 func (cs *CameraStream) scheduleLifetime() {
@@ -587,25 +608,33 @@ func (cs *CameraStream) scheduleLifetime() {
 	}
 
 	cs.lifetimeTimer = time.AfterFunc(cs.lifetimeDelay, func() {
-		core.Logger.Info().Msgf("Session lifetime reached for camera %s, forcing reconnect", cs.camera.DeviceName)
-		cs.stopStream()
+		cs.forceRTSPReconnect("Session lifetime reached")
 	})
 }
 
 func (cs *CameraStream) stopStream() {
 	cs.mutex.Lock()
-	cs.stopStreamInternal()
+	bridge := cs.stopStreamInternal()
 	cs.mutex.Unlock()
+
+	// WebRTC teardown can invoke callbacks that need cs.mutex. Never hold the
+	// CameraStream mutex while stopping the bridge.
+	if bridge != nil {
+		bridge.Stop()
+	}
 
 	if cs.server != nil {
 		cs.server.removeStream(cs.streamId)
 	}
 }
 
-func (cs *CameraStream) stopStreamInternal() {
+// stopStreamInternal changes CameraStream state and returns the bridge that
+// must be stopped after cs.mutex has been released. It must be called with
+// cs.mutex held.
+func (cs *CameraStream) stopStreamInternal() *WebRTCBridge {
 	// Check if we should actually stop
 	if !cs.active && !cs.connecting {
-		return
+		return nil
 	}
 
 	wasActive := cs.active
@@ -629,10 +658,33 @@ func (cs *CameraStream) stopStreamInternal() {
 		core.Logger.Info().Msgf("Stopping stream for camera: %s", cs.camera.DeviceName)
 	}
 
-	// Stop WebRTC bridge
-	if cs.webrtcBridge != nil {
-		cs.webrtcBridge.Stop()
+	return cs.webrtcBridge
+}
+
+// forceLifetimeReconnect deliberately closes current RTSP sessions before
+// tearing down the Tuya/WebRTC session. A plain stop would leave existing
+// RTSP clients attached to a stream that has been removed from the server map.
+// Closing the sockets lets NVR clients perform their normal RTSP reconnect.
+func (cs *CameraStream) forceRTSPReconnect(reason string) {
+	cs.mutex.RLock()
+	if !cs.active {
+		cs.mutex.RUnlock()
+		return
 	}
+	connections := make([]net.Conn, 0, len(cs.clients))
+	for _, client := range cs.clients {
+		if client != nil && client.conn != nil {
+			connections = append(connections, client.conn)
+		}
+	}
+	cs.mutex.RUnlock()
+
+	core.Logger.Info().Msgf("%s for camera %s, forcing RTSP reconnect for %d client(s)", reason, cs.camera.DeviceName, len(connections))
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
+
+	cs.stopStream()
 }
 
 func (cs *CameraStream) scheduleShutdown() {
@@ -649,18 +701,20 @@ func (cs *CameraStream) scheduleShutdown() {
 	core.Logger.Trace().Msgf("Scheduling shutdown for camera %s in %v", cs.camera.DeviceName, cs.shutdownDelay)
 
 	cs.shutdownTimer = time.AfterFunc(cs.shutdownDelay, func() {
-		shouldStop := false
+		var bridge *WebRTCBridge
 		cs.mutex.Lock()
 		if len(cs.clients) == 0 && cs.active {
 			core.Logger.Info().Msgf("Executing delayed shutdown for camera %s", cs.camera.DeviceName)
-			cs.stopStreamInternal()
-			shouldStop = true
+			bridge = cs.stopStreamInternal()
 		}
 		cs.shutdownTimer = nil
 		cs.mutex.Unlock()
 
-		if shouldStop && cs.server != nil {
-			cs.server.removeStream(cs.streamId)
+		if bridge != nil {
+			bridge.Stop()
+			if cs.server != nil {
+				cs.server.removeStream(cs.streamId)
+			}
 		}
 	})
 }

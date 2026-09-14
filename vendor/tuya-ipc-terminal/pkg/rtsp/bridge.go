@@ -223,6 +223,12 @@ func (wb *WebRTCBridge) stopLocked() {
 	}
 }
 
+func (wb *WebRTCBridge) IsHEVC() bool {
+	wb.mutex.RLock()
+	defer wb.mutex.RUnlock()
+	return wb.isHEVC
+}
+
 func (wb *WebRTCBridge) IsConnected() bool {
 	wb.mutex.RLock()
 	defer wb.mutex.RUnlock()
