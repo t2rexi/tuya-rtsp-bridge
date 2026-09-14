@@ -506,7 +506,7 @@ func (rf *RTPForwarder) sendInterleavedRTP(conn net.Conn, channel byte, rtpData 
 	header[2] = byte(len(rtpData) >> 8)
 	header[3] = byte(len(rtpData))
 
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_, err := tcpConn.WriteBuffers(net.Buffers{header[:], rtpData})
-		return err
-	}
+	buf := net.Buffers{header[:], rtpData}
+	_, err := buf.WriteTo(conn)
+	return err
+}
