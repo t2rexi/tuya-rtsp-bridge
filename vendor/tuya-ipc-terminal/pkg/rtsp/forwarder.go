@@ -213,7 +213,7 @@ func (rf *RTPForwarder) AddTCPClient(sessionID string, conn net.Conn, videoRTPCh
 		existingClient.videoRTPChannel = videoRTPChannel
 		existingClient.audioRTPChannel = audioRTPChannel
 		existingClient.backAudioRTPChannel = backAudioRTPChannel
-		existingClient.lastActivity = time.Now()
+		existingClient.lastActivity.Store(time.Now().UnixNano())
 		return nil
 	}
 
@@ -510,6 +510,3 @@ func (rf *RTPForwarder) sendInterleavedRTP(conn net.Conn, channel byte, rtpData 
 		_, err := tcpConn.WriteBuffers(net.Buffers{header[:], rtpData})
 		return err
 	}
-	_, err := conn.Write(append(header[:], rtpData...))
-	return err
-}
