@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	pion "github.com/pion/webrtc/v4"
@@ -60,7 +59,6 @@ type WebRTCBridge struct {
 	OnVideoPacket func(packet *rtp.Packet)
 	OnAudioPacket func(packet *rtp.Packet)
 	OnError       func(error)
-	lastVideoPacket atomic.Int64
 }
 
 func NewWebRTCBridge(camera *storage.CameraInfo, streamResolution string, user *storage.UserSession, storageManager *storage.StorageManager) *WebRTCBridge {
@@ -181,54 +179,7 @@ func (wb *WebRTCBridge) Start() error {
 	started = true
 	core.Logger.Info().Msgf("WebRTC bridge started successfully for camera: %s", wb.camera.DeviceName)
 
-	// Watchdog: Tuya drops HEVC WebRTC sessions every ~8 minutes without
-	// any signal, leaving the bridge "connected" but silent. Force
-	// reconnect if no video packet arrives for 30 seconds.
-	go wb.videoWatchdog()
-
-	// Proactive session lifetime: Tuya WebRTC sessions reliably die
-	// after ~8-9 minutes and start sending corrupted HEVC fragments
-	// before going silent. We restart preemptively to avoid the
-	// "garbage packets" phase that the watchdog can't detect.
-	go wb.sessionLifetime()
-
 	return nil
-}
-
-func (wb *WebRTCBridge) sessionLifetime() {
-	timer := time.NewTimer(8 * time.Minute)
-	defer timer.Stop()
-
-	select {
-	case <-wb.ctx.Done():
-		return
-	case <-timer.C:
-		core.Logger.Info().Msg("Tuya session lifetime reached (8 min), forcing reconnect")
-		wb.handleError(errors.New("session lifetime expired"))
-	}
-}
-
-func (wb *WebRTCBridge) videoWatchdog() {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-wb.ctx.Done():
-			return
-		case <-ticker.C:
-			last := wb.lastVideoPacket.Load()
-			if last == 0 {
-				// No video yet — wait for the first packet.
-				continue
-			}
-			if time.Since(time.Unix(0, last)) > 30*time.Second {
-				core.Logger.Error().Msg("no video packets for 30s, forcing reconnect")
-				wb.handleError(errors.New("video watchdog timeout"))
-				return
-			}
-		}
-	}
 }
 
 func (wb *WebRTCBridge) Stop() {
@@ -317,7 +268,7 @@ func (wb *WebRTCBridge) setupPeerConnection(webRTCConfig *tuya.WebRTCConfig) err
 
 	// On HEVC, use DataChannel to receive video/audio
 	if wb.isHEVC {
-		maxRetransmits := uint16(50)
+		maxRetransmits := uint16(5)
 		ordered := true
 
 		wb.dataChannel, err = wb.peerConnection.CreateDataChannel("fmp4Stream", &pion.DataChannelInit{
@@ -345,7 +296,6 @@ func (wb *WebRTCBridge) setupPeerConnection(webRTCConfig *tuya.WebRTCConfig) err
 
 				switch packet.SSRC {
 				case wb.rtpForwarder.videoSSRC.Load():
-						wb.lastVideoPacket.Store(time.Now().UnixNano())
 					wb.rtpForwarder.ForwardVideoPacket(packet)
 				case wb.rtpForwarder.audioSSRC.Load():
 					wb.rtpForwarder.ForwardAudioPacket(packet)
