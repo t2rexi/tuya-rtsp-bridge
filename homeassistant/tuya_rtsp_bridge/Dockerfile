@@ -3,7 +3,7 @@
 # syntax=docker/dockerfile:1
 
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm
-ARG REPO_URL=https://github.com/DanEng1982/tuya-rtsp-bridge.git
+ARG REPO_URL=https://github.com/t2rexi/tuya-rtsp-bridge.git
 ARG REPO_REF=main
 # Bump APP_VERSION on every release so Docker does not reuse a stale git clone.
 ARG APP_VERSION=1.2.6
