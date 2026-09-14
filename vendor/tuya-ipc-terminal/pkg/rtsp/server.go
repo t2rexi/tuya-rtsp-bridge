@@ -64,6 +64,11 @@ type CameraStream struct {
 	shutdownTimer *time.Timer
 	shutdownDelay time.Duration
 
+	// Session lifetime — Tuya HEVC sessions die after ~9 min; force
+	// reconnect at 8 min to avoid the corrupted-fragments phase.
+	lifetimeTimer *time.Timer
+	lifetimeDelay time.Duration
+	
 	// Reference to server for cleanup
 	server   *RTSPServer
 	streamId string
@@ -335,7 +340,6 @@ func (s *RTSPServer) getOrCreateStream(camera *storage.CameraInfo, streamResolut
 	stream.webrtcBridge.OnError = func(err error) {
 		stream.mutex.Lock()
 		wasRunning := stream.active || stream.connecting
-		clientCount := len(stream.clients)
 		stream.mutex.Unlock()
 
 		if !wasRunning {
@@ -343,9 +347,7 @@ func (s *RTSPServer) getOrCreateStream(camera *storage.CameraInfo, streamResolut
 		}
 
 		core.Logger.Error().Err(err).Msgf("WebRTC error for camera %s", camera.DeviceName)
-		if clientCount == 0 {
-			stream.stopStream()
-		}
+		stream.stopStream()
 	}
 
 	s.streams[streamId] = stream
@@ -461,6 +463,7 @@ func NewCameraStream(camera *storage.CameraInfo, resolution string, user *storag
 		active:        false,
 		lastActivity:  time.Now(),
 		shutdownDelay: 120 * time.Second,
+		lifetimeDelay: 8 * time.Minute,
 		server:        server,
 		streamId:      fmt.Sprintf("%s-%s", camera.DeviceID, resolution),
 	}
@@ -570,6 +573,23 @@ func (cs *CameraStream) startStream() {
 	}
 	cs.active = true
 	cs.mutex.Unlock()
+
+	// Proactive reconnect: Tuya HEVC sessions reliably die after ~9 min.
+	cs.scheduleLifetime()
+}
+
+func (cs *CameraStream) scheduleLifetime() {
+	cs.mutex.Lock()
+	defer cs.mutex.Unlock()
+
+	if cs.lifetimeTimer != nil {
+		cs.lifetimeTimer.Stop()
+	}
+
+	cs.lifetimeTimer = time.AfterFunc(cs.lifetimeDelay, func() {
+		core.Logger.Info().Msgf("Session lifetime reached for camera %s, forcing reconnect", cs.camera.DeviceName)
+		cs.stopStream()
+	})
 }
 
 func (cs *CameraStream) stopStream() {
@@ -598,6 +618,12 @@ func (cs *CameraStream) stopStreamInternal() {
 		cs.shutdownTimer = nil
 	}
 
+	// Cancel lifetime timer
+	if cs.lifetimeTimer != nil {
+		cs.lifetimeTimer.Stop()
+		cs.lifetimeTimer = nil
+	}
+
 	// Only log if we were actually active
 	if wasActive {
 		core.Logger.Info().Msgf("Stopping stream for camera: %s", cs.camera.DeviceName)
@@ -607,7 +633,6 @@ func (cs *CameraStream) stopStreamInternal() {
 	if cs.webrtcBridge != nil {
 		cs.webrtcBridge.Stop()
 	}
-
 }
 
 func (cs *CameraStream) scheduleShutdown() {
