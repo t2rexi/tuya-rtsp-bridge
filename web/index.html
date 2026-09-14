@@ -142,7 +142,7 @@
       background: #0e140e; border: 1px solid var(--line); padding: 12px;
       font: 12px/1.45 Consolas, monospace; white-space: pre-wrap; max-height: 160px; overflow: auto;
     }
-    .log { color: var(--dim); font: 11px/1.4 Consolas, monospace; max-height: 110px; overflow: auto; margin-top: 10px; white-space: pre-wrap; }
+    .log { color: var(--dim); font: 11px/1.4 Consolas, monospace; max-height: 110px; overflow: auto; margin-top: 10px; }
     .ico { width: 16px; height: 16px; display: inline-block; vertical-align: -2px; margin-right: 6px; }
     @media (max-width: 1400px) {
       .shell { grid-template-columns: 300px 1fr 340px; }
@@ -353,10 +353,7 @@
       }
       yamlText = y;
       $("yamlBox").textContent = y;
-      let rawLogText = [s.lastPoll, ...((s.rtsp && s.rtsp.log) || [])].filter(Boolean).join("\n");
-      let formattedLogText = rawLogText.replace(/\s*(\d{2}:\d{2}:\d{2}(\.\d{3})?)/g, '\n$1');
-      formattedLogText = formattedLogText.replace(/\s+(Server:|CSeq:|Date:|Range:|Session:|RTP-Info:|a=|m=)/g, '\n   $1');
-      $("logBox").textContent = formattedLogText.trimStart();
+      $("logBox").textContent = [s.lastPoll, ...((s.rtsp && s.rtsp.log) || [])].filter(Boolean).join("\n");
       $("btnRefresh").disabled = !s.loggedIn;
     }
 
