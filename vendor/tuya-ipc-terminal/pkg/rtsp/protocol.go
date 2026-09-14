@@ -444,8 +444,12 @@ func (s *RTSPServer) handleSetup(client *RTSPClient, request *RTSPRequest) {
 
 		// Add/update UDP client with current ports after video and audio setup
 		if isVideoTrack || isAudioTrack {
+			remoteHost := "127.0.0.1"
+			if host, _, err := net.SplitHostPort(client.conn.RemoteAddr().String()); err == nil && host != "" {
+				remoteHost = host
+			}
 			err := client.stream.webrtcBridge.rtpForwarder.AddUDPClient(client.session,
-				client.videoRTPPort, client.audioRTPPort)
+				client.videoRTPPort, client.audioRTPPort, remoteHost)
 			if err != nil {
 				core.Logger.Error().Err(err).Msg("Error adding UDP RTP client")
 				sendRTSPResponse(client.conn, 500, "Internal Server Error", nil,
@@ -480,6 +484,23 @@ func (s *RTSPServer) handlePlay(client *RTSPClient, request *RTSPRequest) {
 	if sessionHeader == "" || !strings.Contains(sessionHeader, client.session) {
 		sendRTSPResponse(client.conn, 454, "Session Not Found", nil, "")
 		return
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for !client.stream.IsActive() {
+		if !client.stream.IsConnecting() {
+			sendRTSPResponse(client.conn, 503, "Service Unavailable", map[string]string{
+				"CSeq": strconv.Itoa(request.CSeq), "Session": client.session,
+			}, "WebRTC stream failed to start")
+			return
+		}
+		if time.Now().After(deadline) {
+			sendRTSPResponse(client.conn, 503, "Service Unavailable", map[string]string{
+				"CSeq": strconv.Itoa(request.CSeq), "Session": client.session,
+			}, "WebRTC stream startup timeout")
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	headers := map[string]string{
@@ -559,6 +580,9 @@ func (s *RTSPServer) generateSDP(camera *storage.CameraInfo, baseURL string, res
 				videoSdp += "m=video 0 RTP/AVP 96\r\n"
 				videoSdp += "a=rtpmap:96 H264/90000\r\n"
 				videoSdp += "a=fmtp:96 packetization-mode=1;profile-level-id=42001e\r\n"
+			}
+			if videoInfo.Width > 0 && videoInfo.Height > 0 {
+				videoSdp += fmt.Sprintf("a=framesize:96 %dx%d\r\n", videoInfo.Width, videoInfo.Height)
 			}
 		}
 	} else {
