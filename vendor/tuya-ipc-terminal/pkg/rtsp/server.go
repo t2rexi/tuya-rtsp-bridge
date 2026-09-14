@@ -335,17 +335,18 @@ func (s *RTSPServer) getOrCreateStream(camera *storage.CameraInfo, streamResolut
 	stream.webrtcBridge.OnError = func(err error) {
 		stream.mutex.Lock()
 		wasRunning := stream.active || stream.connecting
-		clientCount := len(stream.clients)
 		stream.mutex.Unlock()
 
 		if !wasRunning {
 			return
 		}
 
-		core.Logger.Error().Err(err).Msgf("WebRTC error for camera %s", camera.DeviceName)
-		if clientCount == 0 {
-			stream.stopStream()
-		}
+		core.Logger.Error().Err(err).Msgf("WebRTC error for camera %s, forcing stream stop", camera.DeviceName)
+		// Always stop on WebRTC error. Previously we only stopped when
+		// clientCount == 0 (assumed VLC/HA usage). Frigate keeps one
+		// RTSP client connected permanently, so that condition never
+		// fired and the stream stayed "active" with a dead Tuya session.
+		stream.stopStream()
 	}
 
 	s.streams[streamId] = stream
