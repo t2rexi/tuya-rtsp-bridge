@@ -353,7 +353,7 @@
       }
       yamlText = y;
       $("yamlBox").textContent = y;
-      $("logBox").textContent = [s.lastPoll, ...((s.rtsp && s.rtsp.log) || [])].filter(Boolean).join("\n");
+      $("logBox").innerHTML = [s.lastPoll, ...((s.rtsp && s.rtsp.log) || [])].filter(Boolean).join("<br>");
       $("btnRefresh").disabled = !s.loggedIn;
     }
 
