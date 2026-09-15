@@ -35,6 +35,13 @@ type RTPForwarder struct {
 	videoFirstLogged atomic.Bool
 	audioFirstLogged atomic.Bool
 
+	// HEVC startup state. Parameter sets are cached from the camera stream so
+	// a newly attached RTSP client can start on a clean random-access point.
+	hevcEnabled atomic.Bool
+	hevcVPS     []byte
+	hevcSPS     []byte
+	hevcPPS     []byte
+
 	OnBackchannelAudio func(*rtp.Packet)
 }
 
@@ -68,6 +75,11 @@ type RTPClient struct {
 	backAudioRTPChannel byte
 
 	lastActivity atomic.Int64
+
+	// Per-client HEVC startup/sequence state. Protected by RTPForwarder.mutex.
+	hevcStarted  bool
+	videoSeqInit bool
+	nextVideoSeq uint16
 }
 
 func NewRTPForwarder() *RTPForwarder {
@@ -76,6 +88,10 @@ func NewRTPForwarder() *RTPForwarder {
 	}
 	rf.audioSSRC.Store(1)
 	return rf
+}
+
+func (rf *RTPForwarder) SetHEVC(enabled bool) {
+	rf.hevcEnabled.Store(enabled)
 }
 
 func (rf *RTPForwarder) AddUDPClient(sessionID string, videoRTPPort, audioRTPPort int, remoteHost string) error {
@@ -88,6 +104,8 @@ func (rf *RTPForwarder) AddUDPClient(sessionID string, videoRTPPort, audioRTPPor
 		client.videoRTPPort = videoRTPPort
 		client.audioRTPPort = audioRTPPort
 		client.lastActivity.Store(time.Now().UnixNano())
+		client.hevcStarted = false
+		client.videoSeqInit = false
 
 		// Create new connections if needed
 		if videoRTPPort > 0 && client.videoConn == nil {
@@ -214,6 +232,8 @@ func (rf *RTPForwarder) AddTCPClient(sessionID string, conn net.Conn, videoRTPCh
 		existingClient.audioRTPChannel = audioRTPChannel
 		existingClient.backAudioRTPChannel = backAudioRTPChannel
 		existingClient.lastActivity.Store(time.Now().UnixNano())
+		existingClient.hevcStarted = false
+		existingClient.videoSeqInit = false
 		return nil
 	}
 
@@ -261,16 +281,17 @@ func (rf *RTPForwarder) RemoveClient(sessionID string) {
 }
 
 func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
-	rf.mutex.RLock()
-	if len(rf.clients) == 0 {
-		rf.mutex.RUnlock()
-		return
+	rf.mutex.Lock()
+
+	isHEVC := rf.hevcEnabled.Load()
+	isRandomAccess := false
+	if isHEVC {
+		// Cache parameter sets even when no RTSP client is attached yet.
+		isRandomAccess = rf.updateHEVCCache(packet.Payload)
 	}
 
-	data, err := packet.Marshal()
-	if err != nil {
-		rf.mutex.RUnlock()
-		core.Logger.Error().Err(err).Msg("Error marshaling video RTP packet")
+	if len(rf.clients) == 0 {
+		rf.mutex.Unlock()
 		return
 	}
 
@@ -280,15 +301,61 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 	for sessionID, client := range rf.clients {
 		client.lastActivity.Store(now.UnixNano())
 
-		var writeErr error
-		if client.transportMode == TransportUDP {
-			if client.videoConn != nil {
-				_, writeErr = client.videoConn.Write(data)
+		if isHEVC && !client.hevcStarted {
+			// Do not feed a new decoder from the middle of a GOP. Wait until a
+			// random-access NAL and until all three parameter sets are known.
+			if !isRandomAccess || len(rf.hevcVPS) == 0 || len(rf.hevcSPS) == 0 || len(rf.hevcPPS) == 0 {
+				continue
 			}
-		} else if client.transportMode == TransportTCP && client.tcpConn != nil {
-			writeErr = rf.sendInterleavedRTP(client.tcpConn, client.videoRTPChannel, data)
+
+			client.nextVideoSeq = packet.SequenceNumber
+			client.videoSeqInit = true
+
+			for _, parameterSet := range [][]byte{rf.hevcVPS, rf.hevcSPS, rf.hevcPPS} {
+				ps := *packet
+				ps.SequenceNumber = client.nextVideoSeq
+				client.nextVideoSeq++
+				ps.Marker = false
+				ps.Payload = parameterSet
+
+				data, err := ps.Marshal()
+				if err != nil {
+					core.Logger.Error().Err(err).Msg("Error marshaling cached HEVC parameter set")
+					continue
+				}
+				if err := rf.writeVideoPacket(client, data); err != nil {
+					if isDeadClientError(err) {
+						deadClients = append(deadClients, sessionID)
+					} else {
+						core.Logger.Error().Err(err).Msgf("Error forwarding cached HEVC parameter set to RTP client %s", sessionID)
+					}
+					break
+				}
+			}
+
+			if containsString(deadClients, sessionID) {
+				continue
+			}
+			client.hevcStarted = true
 		}
 
+		out := *packet
+		if isHEVC {
+			if !client.videoSeqInit {
+				client.nextVideoSeq = packet.SequenceNumber
+				client.videoSeqInit = true
+			}
+			out.SequenceNumber = client.nextVideoSeq
+			client.nextVideoSeq++
+		}
+
+		data, err := out.Marshal()
+		if err != nil {
+			core.Logger.Error().Err(err).Msg("Error marshaling video RTP packet")
+			continue
+		}
+
+		writeErr := rf.writeVideoPacket(client, data)
 		if writeErr != nil {
 			if isDeadClientError(writeErr) {
 				deadClients = append(deadClients, sessionID)
@@ -307,11 +374,111 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 		}
 	}
 
-	rf.mutex.RUnlock()
-
 	for _, sessionID := range deadClients {
-		core.Logger.Debug().Msgf("Removing dead video client %s", sessionID)
-		rf.RemoveClient(sessionID)
+		if client, ok := rf.clients[sessionID]; ok {
+			rf.closeClient(client)
+			delete(rf.clients, sessionID)
+			core.Logger.Debug().Msgf("Removing dead video client %s", sessionID)
+		}
+	}
+	rf.mutex.Unlock()
+}
+
+func (rf *RTPForwarder) writeVideoPacket(client *RTPClient, data []byte) error {
+	if client.transportMode == TransportUDP {
+		if client.videoConn != nil {
+			_, err := client.videoConn.Write(data)
+			return err
+		}
+		return nil
+	}
+	if client.transportMode == TransportTCP && client.tcpConn != nil {
+		return rf.sendInterleavedRTP(client.tcpConn, client.videoRTPChannel, data)
+	}
+	return nil
+}
+
+func (rf *RTPForwarder) closeClient(client *RTPClient) {
+	if client.transportMode == TransportUDP {
+		if client.videoConn != nil {
+			_ = client.videoConn.Close()
+		}
+		if client.audioConn != nil {
+			_ = client.audioConn.Close()
+		}
+		if client.backchannelListener != nil {
+			_ = client.backchannelListener.Close()
+		}
+		if client.backchannelRTCPListener != nil {
+			_ = client.backchannelRTCPListener.Close()
+		}
+	} else if client.tcpConn != nil {
+		_ = client.tcpConn.Close()
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// updateHEVCCache caches complete VPS/SPS/PPS NAL units carried either as a
+// single NAL unit or inside an aggregation packet. It also reports whether the
+// RTP payload begins a random-access picture (IDR/CRA), including FU starts.
+func (rf *RTPForwarder) updateHEVCCache(payload []byte) bool {
+	if len(payload) < 2 {
+		return false
+	}
+	nalType := (payload[0] >> 1) & 0x3f
+	switch nalType {
+	case 32, 33, 34:
+		rf.cacheHEVCParameterSet(nalType, payload)
+		return false
+	case 19, 20, 21:
+		return true
+	case 48: // Aggregation Packet (RFC 7798)
+		randomAccess := false
+		for off := 2; off+2 <= len(payload); {
+			sz := int(payload[off])<<8 | int(payload[off+1])
+			off += 2
+			if sz < 2 || off+sz > len(payload) {
+				break
+			}
+			nalu := payload[off : off+sz]
+			t := (nalu[0] >> 1) & 0x3f
+			if t == 32 || t == 33 || t == 34 {
+				rf.cacheHEVCParameterSet(t, nalu)
+			}
+			if t == 19 || t == 20 || t == 21 {
+				randomAccess = true
+			}
+			off += sz
+		}
+		return randomAccess
+	case 49: // Fragmentation Unit
+		if len(payload) < 3 || payload[2]&0x80 == 0 {
+			return false
+		}
+		fuType := payload[2] & 0x3f
+		return fuType == 19 || fuType == 20 || fuType == 21
+	default:
+		return false
+	}
+}
+
+func (rf *RTPForwarder) cacheHEVCParameterSet(nalType byte, nalu []byte) {
+	copyNAL := append([]byte(nil), nalu...)
+	switch nalType {
+	case 32:
+		rf.hevcVPS = copyNAL
+	case 33:
+		rf.hevcSPS = copyNAL
+	case 34:
+		rf.hevcPPS = copyNAL
 	}
 }
 
@@ -389,6 +556,10 @@ func (rf *RTPForwarder) Stop() {
 
 	rf.mutex.Lock()
 	defer rf.mutex.Unlock()
+
+	rf.hevcVPS = nil
+	rf.hevcSPS = nil
+	rf.hevcPPS = nil
 
 	for _, client := range rf.clients {
 		if client.transportMode == TransportUDP {
