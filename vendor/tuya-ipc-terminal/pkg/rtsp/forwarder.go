@@ -37,10 +37,13 @@ type RTPForwarder struct {
 
 	// HEVC startup state. Parameter sets are cached from the camera stream so
 	// a newly attached RTSP client can start on a clean random-access point.
-	hevcEnabled atomic.Bool
-	hevcVPS     []byte
-	hevcSPS     []byte
-	hevcPPS     []byte
+	hevcEnabled  atomic.Bool
+	hevcVPS      []byte
+	hevcSPS      []byte
+	hevcPPS      []byte
+	hevcFUType   byte
+	hevcFUBuf    []byte
+	hevcFUActive bool
 
 	OnBackchannelAudio func(*rtp.Packet)
 }
@@ -308,7 +311,10 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 				continue
 			}
 
-			client.nextVideoSeq = packet.SequenceNumber
+			// Start every RTSP client's HEVC RTP sequence space at 1. The
+			// cached parameter sets consume 1..3; the first live IDR follows
+			// at 4. This keeps RTP-Info (seq=1) consistent with the wire.
+			client.nextVideoSeq = 1
 			client.videoSeqInit = true
 
 			for _, parameterSet := range [][]byte{rf.hevcVPS, rf.hevcSPS, rf.hevcPPS} {
@@ -342,7 +348,7 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 		out := *packet
 		if isHEVC {
 			if !client.videoSeqInit {
-				client.nextVideoSeq = packet.SequenceNumber
+				client.nextVideoSeq = 1
 				client.videoSeqInit = true
 			}
 			out.SequenceNumber = client.nextVideoSeq
@@ -459,12 +465,32 @@ func (rf *RTPForwarder) updateHEVCCache(payload []byte) bool {
 			off += sz
 		}
 		return randomAccess
-	case 49: // Fragmentation Unit
-		if len(payload) < 3 || payload[2]&0x80 == 0 {
+	case 49: // Fragmentation Unit (RFC 7798)
+		if len(payload) < 3 {
 			return false
 		}
+		start := payload[2]&0x80 != 0
+		end := payload[2]&0x40 != 0
 		fuType := payload[2] & 0x3f
-		return fuType == 19 || fuType == 20 || fuType == 21
+
+		if start {
+			rf.hevcFUType = fuType
+			rf.hevcFUBuf = append(rf.hevcFUBuf[:0], payload[0]&0x81|((fuType<<1)&0x7e), payload[1])
+			rf.hevcFUBuf = append(rf.hevcFUBuf, payload[3:]...)
+			rf.hevcFUActive = fuType == 32 || fuType == 33 || fuType == 34
+		} else if rf.hevcFUActive && rf.hevcFUType == fuType {
+			rf.hevcFUBuf = append(rf.hevcFUBuf, payload[3:]...)
+		}
+
+		if end {
+			if rf.hevcFUActive && rf.hevcFUType == fuType {
+				rf.cacheHEVCParameterSet(fuType, rf.hevcFUBuf)
+			}
+			rf.hevcFUActive = false
+			rf.hevcFUBuf = nil
+		}
+
+		return start && (fuType == 19 || fuType == 20 || fuType == 21)
 	default:
 		return false
 	}
@@ -560,6 +586,9 @@ func (rf *RTPForwarder) Stop() {
 	rf.hevcVPS = nil
 	rf.hevcSPS = nil
 	rf.hevcPPS = nil
+	rf.hevcFUType = 0
+	rf.hevcFUBuf = nil
+	rf.hevcFUActive = false
 
 	for _, client := range rf.clients {
 		if client.transportMode == TransportUDP {

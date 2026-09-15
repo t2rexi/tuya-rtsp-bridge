@@ -374,11 +374,11 @@ func (s *RTSPServer) getOrCreateStream(camera *storage.CameraInfo, streamResolut
 	return stream, nil
 }
 
-func (s *RTSPServer) removeStream(streamId string) {
+func (s *RTSPServer) removeStream(streamId string, expected *CameraStream) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if _, exists := s.streams[streamId]; exists {
+	if stream, exists := s.streams[streamId]; exists && (expected == nil || stream == expected) {
 		delete(s.streams, streamId)
 		core.Logger.Trace().Msgf("Removed stream %s from server map", streamId)
 	}
@@ -624,7 +624,7 @@ func (cs *CameraStream) stopStream() {
 	}
 
 	if cs.server != nil {
-		cs.server.removeStream(cs.streamId)
+		cs.server.removeStream(cs.streamId, cs)
 	}
 }
 
@@ -666,25 +666,31 @@ func (cs *CameraStream) stopStreamInternal() *WebRTCBridge {
 // RTSP clients attached to a stream that has been removed from the server map.
 // Closing the sockets lets NVR clients perform their normal RTSP reconnect.
 func (cs *CameraStream) forceRTSPReconnect(reason string) {
-	cs.mutex.RLock()
-	if !cs.active {
-		cs.mutex.RUnlock()
+	cs.mutex.Lock()
+	if !cs.active && !cs.connecting {
+		cs.mutex.Unlock()
 		return
 	}
+	bridge := cs.stopStreamInternal()
 	connections := make([]net.Conn, 0, len(cs.clients))
 	for _, client := range cs.clients {
 		if client != nil && client.conn != nil {
 			connections = append(connections, client.conn)
 		}
 	}
-	cs.mutex.RUnlock()
+	cs.mutex.Unlock()
 
 	core.Logger.Info().Msgf("%s for camera %s, forcing RTSP reconnect for %d client(s)", reason, cs.camera.DeviceName, len(connections))
 	for _, conn := range connections {
 		_ = conn.Close()
 	}
 
-	cs.stopStream()
+	if bridge != nil {
+		bridge.Stop()
+	}
+	if cs.server != nil {
+		cs.server.removeStream(cs.streamId, cs)
+	}
 }
 
 func (cs *CameraStream) scheduleShutdown() {
@@ -713,7 +719,7 @@ func (cs *CameraStream) scheduleShutdown() {
 		if bridge != nil {
 			bridge.Stop()
 			if cs.server != nil {
-				cs.server.removeStream(cs.streamId)
+				cs.server.removeStream(cs.streamId, cs)
 			}
 		}
 	})
