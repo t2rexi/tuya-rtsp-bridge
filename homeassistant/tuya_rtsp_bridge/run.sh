@@ -14,6 +14,8 @@ cd "${XDG_DATA_HOME}/tuya-rtsp-bridge"
 
 if command -v bashio >/dev/null 2>&1; then
   bashio::log.info "Tuya RTSP Bridge starting (API :8787, RTSP :8554)" || true
+  else
+  echo "[INFO] Tuya RTSP Bridge starting (API :8787, RTSP :8554)"
 fi
 
 exec python3 -u "${TUYA_BRIDGE_ROOT}/src/server.py"
