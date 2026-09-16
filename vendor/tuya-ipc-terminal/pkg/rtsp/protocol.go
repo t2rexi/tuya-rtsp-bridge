@@ -504,10 +504,9 @@ func (s *RTSPServer) handlePlay(client *RTSPClient, request *RTSPRequest) {
 	}
 
 	headers := map[string]string{
-		"CSeq":     strconv.Itoa(request.CSeq),
-		"Session":  client.session,
-		"Range":    "npt=0.000-",
-		"RTP-Info": fmt.Sprintf("url=%s;seq=1;rtptime=0", request.URL),
+		"CSeq":    strconv.Itoa(request.CSeq),
+		"Session": client.session,
+		"Range":   "npt=0.000-",
 	}
 
 	sendRTSPResponse(client.conn, 200, "OK", headers, "")

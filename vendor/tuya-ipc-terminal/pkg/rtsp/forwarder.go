@@ -37,13 +37,15 @@ type RTPForwarder struct {
 
 	// HEVC startup state. Parameter sets are cached from the camera stream so
 	// a newly attached RTSP client can start on a clean random-access point.
-	hevcEnabled  atomic.Bool
-	hevcVPS      []byte
-	hevcSPS      []byte
-	hevcPPS      []byte
-	hevcFUType   byte
-	hevcFUBuf    []byte
-	hevcFUActive bool
+	hevcEnabled    atomic.Bool
+	hevcVPS        []byte
+	hevcSPS        []byte
+	hevcPPS        []byte
+	hevcFUType     byte
+	hevcFUBuf      []byte
+	hevcFUActive   bool
+	hevcFUSeq      uint16
+	hevcFUSeqValid bool
 
 	OnBackchannelAudio func(*rtp.Packet)
 }
@@ -290,7 +292,7 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 	isRandomAccess := false
 	if isHEVC {
 		// Cache parameter sets even when no RTSP client is attached yet.
-		isRandomAccess = rf.updateHEVCCache(packet.Payload)
+		isRandomAccess = rf.updateHEVCCache(packet.SequenceNumber, packet.Payload)
 	}
 
 	if len(rf.clients) == 0 {
@@ -435,10 +437,11 @@ func containsString(values []string, want string) bool {
 // updateHEVCCache caches complete VPS/SPS/PPS NAL units carried either as a
 // single NAL unit or inside an aggregation packet. It also reports whether the
 // RTP payload begins a random-access picture (IDR/CRA), including FU starts.
-func (rf *RTPForwarder) updateHEVCCache(payload []byte) bool {
+func (rf *RTPForwarder) updateHEVCCache(seq uint16, payload []byte) bool {
 	if len(payload) < 2 {
 		return false
 	}
+
 	nalType := (payload[0] >> 1) & 0x3f
 	switch nalType {
 	case 32, 33, 34:
@@ -469,28 +472,47 @@ func (rf *RTPForwarder) updateHEVCCache(payload []byte) bool {
 		if len(payload) < 3 {
 			return false
 		}
+
 		start := payload[2]&0x80 != 0
 		end := payload[2]&0x40 != 0
 		fuType := payload[2] & 0x3f
 
 		if start {
 			rf.hevcFUType = fuType
-			rf.hevcFUBuf = append(rf.hevcFUBuf[:0], payload[0]&0x81|((fuType<<1)&0x7e), payload[1])
-			rf.hevcFUBuf = append(rf.hevcFUBuf, payload[3:]...)
 			rf.hevcFUActive = fuType == 32 || fuType == 33 || fuType == 34
-		} else if rf.hevcFUActive && rf.hevcFUType == fuType {
+			rf.hevcFUSeq = seq
+			rf.hevcFUSeqValid = true
+
+			if rf.hevcFUActive {
+				rf.hevcFUBuf = append(rf.hevcFUBuf[:0],
+					payload[0]&0x81|((fuType<<1)&0x7e), payload[1])
+				rf.hevcFUBuf = append(rf.hevcFUBuf, payload[3:]...)
+			} else {
+				rf.hevcFUBuf = nil
+			}
+		} else {
+			if !rf.hevcFUActive || !rf.hevcFUSeqValid ||
+				seq != rf.hevcFUSeq+1 || rf.hevcFUType != fuType {
+				rf.hevcFUActive = false
+				rf.hevcFUSeqValid = false
+				rf.hevcFUBuf = nil
+				return false
+			}
+			rf.hevcFUSeq = seq
 			rf.hevcFUBuf = append(rf.hevcFUBuf, payload[3:]...)
 		}
 
+		randomAccess := start && (fuType == 19 || fuType == 20 || fuType == 21)
 		if end {
-			if rf.hevcFUActive && rf.hevcFUType == fuType {
+			if rf.hevcFUActive {
 				rf.cacheHEVCParameterSet(fuType, rf.hevcFUBuf)
 			}
 			rf.hevcFUActive = false
+			rf.hevcFUSeqValid = false
 			rf.hevcFUBuf = nil
 		}
 
-		return start && (fuType == 19 || fuType == 20 || fuType == 21)
+		return randomAccess
 	default:
 		return false
 	}
@@ -589,6 +611,8 @@ func (rf *RTPForwarder) Stop() {
 	rf.hevcFUType = 0
 	rf.hevcFUBuf = nil
 	rf.hevcFUActive = false
+	rf.hevcFUSeq = 0
+	rf.hevcFUSeqValid = false
 
 	for _, client := range rf.clients {
 		if client.transportMode == TransportUDP {
