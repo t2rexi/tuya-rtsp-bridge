@@ -33,8 +33,8 @@ class RtspManager:
     def _log(self, line: str) -> None:
         with self._lock:
             self.log.append(line.rstrip())
-            if len(self.log) > 400:
-                self.log = self.log[-400:]
+            if len(self.log) > 5000:
+                self.log = self.log[-5000:]
 
     def running(self) -> bool:
         if self.proc is not None and self.proc.poll() is None:
@@ -54,7 +54,7 @@ class RtspManager:
             "port": self.port,
             "binary": str(EXE) if EXE.exists() else None,
             "go": str(GO_EXE) if GO_EXE.exists() else None,
-            "log": self.log[-40:],
+            "log": self.log[-5000:],
         }
 
     def ensure_binary(self) -> Path:
