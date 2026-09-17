@@ -87,7 +87,11 @@ type RTPClient struct {
 	videoSeqInit bool
 	nextVideoSeq uint16
 	videoSSRC uint32
-	audioSSRC uint32
+
+	// Per-client RTP sequence/SSRC state.
+	audioSeqInit bool
+	nextAudioSeq uint16
+	audioSSRC    uint32
 }
 
 func newRTPSSRC() uint32 {
@@ -99,6 +103,15 @@ func newRTPSSRC() uint32 {
 		}
 	}
 	return uint32(time.Now().UnixNano())
+}
+
+func newRTPSequence() uint16 {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return uint16(b[0])<<8 | uint16(b[1])
+	}
+
+	return uint16(time.Now().UnixNano())
 }
 
 func NewRTPForwarder() *RTPForwarder {
@@ -309,9 +322,10 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 
 	isHEVC := rf.hevcEnabled.Load()
 	isRandomAccess := false
+
 	if isHEVC {
 		// Cache parameter sets even when no RTSP client is attached yet.
-		isRandomAccess = rf.updateHEVCCache(packet.SequenceNumber, packet.Payload)
+		isRandomAccess = rf.updateHEVCCache(packet)
 	}
 
 	if len(rf.clients) == 0 {
@@ -326,20 +340,26 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 		client.lastActivity.Store(now.UnixNano())
 
 		if isHEVC && !client.hevcStarted {
-			// Do not feed a new decoder from the middle of a GOP. Wait until a
-			// random-access NAL and until all three parameter sets are known.
-			if !isRandomAccess || len(rf.hevcVPS) == 0 || len(rf.hevcSPS) == 0 || len(rf.hevcPPS) == 0 {
+			// Do not feed a new decoder from the middle of a GOP.
+			// Wait until a random-access NAL and all parameter sets are known.
+			if !isRandomAccess ||
+				len(rf.hevcVPS) == 0 ||
+				len(rf.hevcSPS) == 0 ||
+				len(rf.hevcPPS) == 0 {
 				continue
 			}
 
-			// Start every RTSP client's HEVC RTP sequence space at 1. The
-			// cached parameter sets consume 1..3; the first live IDR follows
-			// at 4. This keeps RTP-Info (seq=1) consistent with the wire.
+			// A new HEVC RTP stream gets a new SSRC and a new sequence space.
+			// Do NOT hard-code sequence number 1.
 			client.videoSSRC = newRTPSSRC()
-			client.nextVideoSeq = 1
+			client.nextVideoSeq = newRTPSequence()
 			client.videoSeqInit = true
 
-			for _, parameterSet := range [][]byte{rf.hevcVPS, rf.hevcSPS, rf.hevcPPS} {
+			for _, parameterSet := range [][]byte{
+				rf.hevcVPS,
+				rf.hevcSPS,
+				rf.hevcPPS,
+			} {
 				ps := *packet
 				ps.SequenceNumber = client.nextVideoSeq
 				ps.SSRC = client.videoSSRC
@@ -349,14 +369,22 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 
 				data, err := ps.Marshal()
 				if err != nil {
-					core.Logger.Error().Err(err).Msg("Error marshaling cached HEVC parameter set")
+					core.Logger.Error().
+						Err(err).
+						Msg("Error marshaling cached HEVC parameter set")
 					continue
 				}
+
 				if err := rf.writeVideoPacket(client, data); err != nil {
 					if isDeadClientError(err) {
 						deadClients = append(deadClients, sessionID)
 					} else {
-						core.Logger.Error().Err(err).Msgf("Error forwarding cached HEVC parameter set to RTP client %s", sessionID)
+						core.Logger.Error().
+							Err(err).
+							Msgf(
+								"Error forwarding cached HEVC parameter set to RTP client %s",
+								sessionID,
+							)
 					}
 					break
 				}
@@ -365,26 +393,33 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 			if containsString(deadClients, sessionID) {
 				continue
 			}
+
 			client.hevcStarted = true
 		}
 
 		out := *packet
+
 		if client.videoSSRC == 0 {
 			client.videoSSRC = newRTPSSRC()
 		}
+
 		out.SSRC = client.videoSSRC
+
 		if isHEVC {
 			if !client.videoSeqInit {
-				client.nextVideoSeq = 1
+				client.nextVideoSeq = newRTPSequence()
 				client.videoSeqInit = true
 			}
+
 			out.SequenceNumber = client.nextVideoSeq
 			client.nextVideoSeq++
 		}
 
 		data, err := out.Marshal()
 		if err != nil {
-			core.Logger.Error().Err(err).Msg("Error marshaling video RTP packet")
+			core.Logger.Error().
+				Err(err).
+				Msg("Error marshaling video RTP packet")
 			continue
 		}
 
@@ -393,16 +428,29 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 			if isDeadClientError(writeErr) {
 				deadClients = append(deadClients, sessionID)
 			} else {
-				core.Logger.Error().Err(writeErr).Msgf("Error forwarding video packet to RTP client %s", sessionID)
+				core.Logger.Error().
+					Err(writeErr).
+					Msgf(
+						"Error forwarding video RTP packet to RTP client %s",
+						sessionID,
+					)
 			}
 			continue
 		}
 
 		if !rf.videoFirstLogged.Swap(true) {
 			if client.transportMode == TransportUDP {
-				core.Logger.Trace().Msgf("Successfully sent first video packet to UDP client %s on port %d", sessionID, client.videoRTPPort)
+				core.Logger.Trace().Msgf(
+					"Successfully sent first video packet to UDP client %s on port %d",
+					sessionID,
+					client.videoRTPPort,
+				)
 			} else {
-				core.Logger.Trace().Msgf("Successfully sent first video packet to TCP client %s on channel %d", sessionID, client.videoRTPChannel)
+				core.Logger.Trace().Msgf(
+					"Successfully sent first video packet to TCP client %s on channel %d",
+					sessionID,
+					client.videoRTPChannel,
+				)
 			}
 		}
 	}
@@ -411,9 +459,11 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 		if client, ok := rf.clients[sessionID]; ok {
 			rf.closeClient(client)
 			delete(rf.clients, sessionID)
-			core.Logger.Debug().Msgf("Removing dead video client %s", sessionID)
+			core.Logger.Debug().
+				Msgf("Removing dead video client %s", sessionID)
 		}
 	}
+
 	rf.mutex.Unlock()
 }
 
@@ -569,26 +619,26 @@ func (rf *RTPForwarder) ForwardAudioPacket(packet *rtp.Packet) {
 	for sessionID, client := range rf.clients {
 		client.lastActivity.Store(now.UnixNano())
 
-		out := *packet
-
-		if !client.audioSeqInit {
-			client.nextAudioSeq = 1
-			client.audioSeqInit = true
-		}
-
-		out.SequenceNumber = client.nextAudioSeq
-		client.nextAudioSeq++
-
 		if client.audioSSRC == 0 {
 			client.audioSSRC = newRTPSSRC()
 		}
+
+		if !client.audioSeqInit {
+			client.nextAudioSeq = newRTPSequence()
+			client.audioSeqInit = true
+		}
+
+		out := *packet
 		out.SSRC = client.audioSSRC
+		out.SequenceNumber = client.nextAudioSeq
+		client.nextAudioSeq++
 
 		data, err := out.Marshal()
 		if err != nil {
-			rf.mutex.Unlock()
-			core.Logger.Error().Err(err).Msg("Error marshaling audio RTP packet")
-			return
+			core.Logger.Error().
+				Err(err).
+				Msg("Error marshaling audio RTP packet")
+			continue
 		}
 
 		var writeErr error
@@ -597,12 +647,14 @@ func (rf *RTPForwarder) ForwardAudioPacket(packet *rtp.Packet) {
 			if client.audioConn != nil {
 				_, writeErr = client.audioConn.Write(data)
 			}
-		} else if client.transportMode == TransportTCP && client.tcpConn != nil {
-			writeErr = rf.sendInterleavedRTP(
-				client.tcpConn,
-				client.audioRTPChannel,
-				data,
-			)
+		} else if client.transportMode == TransportTCP {
+			if client.tcpConn != nil {
+				writeErr = rf.sendInterleavedRTP(
+					client.tcpConn,
+					client.audioRTPChannel,
+					data,
+				)
+			}
 		}
 
 		if writeErr != nil {
@@ -611,7 +663,10 @@ func (rf *RTPForwarder) ForwardAudioPacket(packet *rtp.Packet) {
 			} else {
 				core.Logger.Error().
 					Err(writeErr).
-					Msgf("Error forwarding audio packet to RTP client %s", sessionID)
+					Msgf(
+						"Error forwarding audio packet to RTP client %s",
+						sessionID,
+					)
 			}
 			continue
 		}
@@ -633,12 +688,16 @@ func (rf *RTPForwarder) ForwardAudioPacket(packet *rtp.Packet) {
 		}
 	}
 
-	rf.mutex.Unlock()
-
 	for _, sessionID := range deadClients {
-		core.Logger.Debug().Msgf("Removing dead audio client %s", sessionID)
-		rf.RemoveClient(sessionID)
+		if client, ok := rf.clients[sessionID]; ok {
+			rf.closeClient(client)
+			delete(rf.clients, sessionID)
+			core.Logger.Debug().
+				Msgf("Removing dead audio client %s", sessionID)
+		}
 	}
+
+	rf.mutex.Unlock()
 }
 
 func isDeadClientError(err error) bool {
