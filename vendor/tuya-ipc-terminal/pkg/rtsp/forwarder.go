@@ -325,7 +325,7 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 
 	if isHEVC {
 		// Cache parameter sets even when no RTSP client is attached yet.
-		isRandomAccess = rf.updateHEVCCache(packet)
+		isRandomAccess = rf.updateHEVCCache(packet.SequenceNumber, packet.Payload)
 	}
 
 	if len(rf.clients) == 0 {
