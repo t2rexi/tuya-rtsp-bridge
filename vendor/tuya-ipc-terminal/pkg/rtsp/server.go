@@ -66,8 +66,8 @@ type CameraStream struct {
 
 	// Session lifetime — Tuya HEVC sessions die after ~9 min; force
 	// reconnect at 8 min to avoid the corrupted-fragments phase.
-	lifetimeTimer *time.Timer
-	lifetimeDelay time.Duration
+//	lifetimeTimer *time.Timer
+//	lifetimeDelay time.Duration
 
 	// Reference to server for cleanup
 	server   *RTSPServer
@@ -594,23 +594,23 @@ func (cs *CameraStream) startStream() {
 
 	// Proactive reconnect is only needed for Tuya HEVC sessions, which are
 	// known to expire after roughly nine minutes on affected cameras.
-	if bridge.IsHEVC() {
-		cs.scheduleLifetime()
-	}
+//	if bridge.IsHEVC() {
+//		cs.scheduleLifetime()
+//	}
 }
 
-func (cs *CameraStream) scheduleLifetime() {
-	cs.mutex.Lock()
-	defer cs.mutex.Unlock()
-
-	if cs.lifetimeTimer != nil {
-		cs.lifetimeTimer.Stop()
-	}
-
-	cs.lifetimeTimer = time.AfterFunc(cs.lifetimeDelay, func() {
-		cs.forceRTSPReconnect("Session lifetime reached")
-	})
-}
+//func (cs *CameraStream) scheduleLifetime() {
+//	cs.mutex.Lock()
+//	defer cs.mutex.Unlock()
+//
+//	if cs.lifetimeTimer != nil {
+//		cs.lifetimeTimer.Stop()
+//	}
+//
+//	cs.lifetimeTimer = time.AfterFunc(cs.lifetimeDelay, func() {
+//		cs.forceRTSPReconnect("Session lifetime reached")
+//	})
+//}
 
 func (cs *CameraStream) stopStream() {
 	cs.mutex.Lock()
@@ -648,10 +648,10 @@ func (cs *CameraStream) stopStreamInternal() *WebRTCBridge {
 	}
 
 	// Cancel lifetime timer
-	if cs.lifetimeTimer != nil {
-		cs.lifetimeTimer.Stop()
-		cs.lifetimeTimer = nil
-	}
+//	if cs.lifetimeTimer != nil {
+//		cs.lifetimeTimer.Stop()
+//		cs.lifetimeTimer = nil
+//	}
 
 	// Only log if we were actually active
 	if wasActive {
