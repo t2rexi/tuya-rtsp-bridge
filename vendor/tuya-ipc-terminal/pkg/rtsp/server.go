@@ -61,8 +61,8 @@ type CameraStream struct {
 	lastActivity time.Time
 
 	// Delayed shutdown
-	//shutdownTimer *time.Timer
-	//shutdownDelay time.Duration
+	shutdownTimer *time.Timer
+	shutdownDelay time.Duration
 
 	// Session lifetime — Tuya HEVC sessions die after ~9 min; force
 	// reconnect at 8 min to avoid the corrupted-fragments phase.
@@ -480,8 +480,8 @@ func NewCameraStream(camera *storage.CameraInfo, resolution string, user *storag
 		clients:       make(map[string]*RTSPClient),
 		active:        false,
 		lastActivity:  time.Now(),
-		shutdownDelay: 120 * time.Second,
-		lifetimeDelay: 7 * time.Minute,
+		shutdownDelay: 5 * time.Second,
+		//lifetimeDelay: 7 * time.Minute,
 		server:        server,
 		streamId:      fmt.Sprintf("%s-%s", camera.DeviceID, resolution),
 	}
