@@ -480,7 +480,7 @@ func NewCameraStream(camera *storage.CameraInfo, resolution string, user *storag
 		clients:       make(map[string]*RTSPClient),
 		active:        false,
 		lastActivity:  time.Now(),
-		shutdownDelay: 5 * time.Second,
+		shutdownDelay: 30 * time.Second,
 		//lifetimeDelay: 7 * time.Minute,
 		server:        server,
 		streamId:      fmt.Sprintf("%s-%s", camera.DeviceID, resolution),
