@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import re
 
-from paths import ffmpeg_exe, install_root, user_data
+from paths import ffmpeg_exe, install_root, rotate_log_if_large, user_data
 
 ROOT = user_data()
 LIVE = install_root() / "web" / "live"
@@ -22,6 +22,7 @@ def find_ffmpeg() -> Optional[Path]:
 
 def _open_log():
     LOG_BASE.parent.mkdir(parents=True, exist_ok=True)
+    rotate_log_if_large(LOG_BASE)
     return open(LOG_BASE, "a", encoding="utf-8", buffering=1)
 
 
