@@ -9,7 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from paths import engine_exe, ffmpeg_exe, user_data
+from paths import engine_exe, ffmpeg_exe, rotate_log_if_large, user_data
 from procutil import creationflags, kill_engine, pid_alive
 
 LOCK = user_data() / "rtsp_watchdog.lock"
@@ -19,6 +19,7 @@ INTERVAL = 75
 
 
 def log(msg: str) -> None:
+    rotate_log_if_large(LOG)
     with LOG.open("a", encoding="utf-8") as f:
         f.write(time.strftime("%H:%M:%S ") + msg + "\n")
 
