@@ -131,3 +131,14 @@ def prepend_bundled_path() -> None:
 
 
 prepend_bundled_path()
+
+
+def rotate_log_if_large(path: Path, max_bytes: int = 5_000_000) -> None:
+    """Keep a single log file from growing without bound. Best-effort, never raises."""
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            old = path.with_suffix(path.suffix + ".1")
+            old.unlink(missing_ok=True)
+            path.rename(old)
+    except Exception:
+        pass
