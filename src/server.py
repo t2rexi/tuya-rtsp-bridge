@@ -23,7 +23,7 @@ from tuya_client import REGIONS, TuyaClient, safe_poll_text, slug
 from local_ptz import LocalPtz
 import services
 
-from paths import tuya_data, user_data, web_dir
+from paths import rotate_log_if_large, tuya_data, user_data, web_dir
 from i18n import t, load_lang
 
 ROOT = user_data()
@@ -466,6 +466,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 def _attach_file_log() -> None:
     log = ROOT / "server_utf8.log"
+    rotate_log_if_large(log)
     try:
         fh = open(log, "a", encoding="utf-8", buffering=1)
     except OSError:
